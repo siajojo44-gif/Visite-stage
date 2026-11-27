@@ -1,1613 +1,203 @@
-<html lang="en" style="--safe-area-inset-top: 115px; --safe-area-scroll-padding-top: 544px;"><style>* { -webkit-text-size-adjust: 109.00000000000001% !important; }</style><head><script>(() => {
-'use strict';
-const GRANT = '__mai_artifact_identity';
-const URL_ONLY = [GRANT, '__mai_artifact_binding', '__mai_artifact_session'];
-const SESSION = 'x-meta-ai-artifact-session';
-const REJECTED = 'x-meta-ai-artifact-auth';
-const PARENTS = ['https://www.meta.ai', 'https://meta.ai', 'https://staging.ecto1.ai'];
-const EARLY_MS = 120000;
-const TIMEOUT_MS = 10000;
-const GRANT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+<html lang="fr"><style>* { -webkit-text-size-adjust: 109.00000000000001% !important; }</style><head><style>
+@font-face {
+font-family: "Optimistic";
+font-style: normal;
+font-weight: 400 600;
+font-display: swap;
+src: url("/fonts/OptimisticAI_VF_Optimized.woff2") format("woff2");
+}
+@font-face {
+font-family: "Optimistic Mono";
+font-style: normal;
+font-weight: 400;
+font-display: swap;
+src: url("/fonts/OptimisticMono_W_TextRegular.woff2") format("woff2");
+}
+:where(html) {
+font-family: "Optimistic", system-ui, sans-serif;
+}
+:where(code, pre, kbd, samp) {
+font-family: "Optimistic Mono", ui-monospace, monospace;
+}
+</style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Visites Stage - Temps Reel Multi-Profs</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+body{margin:0;font-family:system-ui;background:#f5f5f7}
+header{background:#111;color:#fff;padding:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+header h1{margin:0;font-size:18px}
+#map{height:55vh}
+#panel{padding:12px;background:#fff}
+button{padding:8px 12px;border-radius:8px;border:none;background:#111;color:#fff;cursor:pointer}
+#reserveBtn{background:#0a7a42}
+#locateBtn{background:#2a5bd7}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;background:#0a7a42;color:#fff;font-size:12px;animation:pulse 1.5s infinite}
+@keyframes pulse{0%{opacity:1}50%{opacity:0.5}100%{opacity:1}}
+</style>
+</head>
+<body>
+<header>
+<h1>VISITES DE STAGE - RUE PARADIS - TEMPS REEL</h1>
+<div>
+<span class="badge">● Temps réel activé</span>
+<select id="profSelect"><option value="Prof A">Prof A</option><option value="Prof B">Prof B</option></select>
+<button id="locateBtn">Me localiser</button>
+</div>
+</header>
+<div id="map"></div>
+<div id="panel">
+<div><b>TOTAL:</b> <span id="total">0</span> | <b>LIBRES:</b> <span id="libres">0</span> | <b>RESERVES:</b> <span id="reserves">0</span></div>
+<h2 id="eleveNom">Clique sur un élève sur la carte</h2>
+<p id="eleveAdresse"></p>
+<p id="eleveStatut"></p>
+<button id="reserveBtn" disabled="">Réserver</button>
+<button id="libererBtn" style="display:none">Libérer (seulement si c'est toi)</button>
+<ul id="liste"></ul>
+</div>
+<script>
+// === CONFIG SUPABASE - REMPLACE PAR TES CLES ===
+const SUPABASE_URL = "https://TON_PROJET.supabase.co";
+const SUPABASE_KEY = "TA_CLE_ANON";
+// Si tu n'as pas encore créé Supabase, le code fonctionne en mode local en attendant
 
-const nameOf = (pair) => {
-try {
-return decodeURIComponent(pair.split('=')[0]);
-} catch (_) {
-return null;
+let supabase = null;
+let useSupabase = false;
+try{
+if(!SUPABASE_URL.includes("TON_PROJET")){
+supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+useSupabase = true;
 }
-};
-const pairs = location.search.slice(1).split('&').filter(Boolean);
-const grants = pairs.filter((pair) => nameOf(pair) === GRANT);
-if (grants.length !== 1 || !grants[0].includes('=')) return;
-let token;
-try {
-token = decodeURIComponent(grants[0].slice(grants[0].indexOf('=') + 1));
-} catch (_) {
-return;
-}
-if (!GRANT_SHAPE.test(token)) return;
-const kept = pairs.filter((pair) => !URL_ONLY.includes(nameOf(pair)));
-history.replaceState(
-history.state,
-'',
-location.pathname + (kept.length ? '?' + kept.join('&') : '') + location.hash,
-);
+}catch(e){ useSupabase=false; }
 
-const parentWindow = window.parent;
-const framed = parentWindow !== window;
-const ancestors = location.ancestorOrigins;
-let claimed = ancestors && ancestors.length ? ancestors[0] : '';
-if (!ancestors) {
-try {
-claimed = new URL(document.referrer).origin;
-} catch (_) {}
-}
-// With no readable parent origin, each allowed origin is asked; postMessage delivers to the matching one only.
-const parentOrigins = !framed ? [] : !claimed ? PARENTS : PARENTS.includes(claimed) ? [claimed] : [];
-
-const sameOrigin = (url) => {
-try {
-return new URL(url, document.baseURI).origin === location.origin;
-} catch (_) {
-return false;
-}
-};
-const expiresAt = (grant) => {
-try {
-const part = grant.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-const exp = JSON.parse(atob(part + '==='.slice((part.length + 3) % 4))).exp;
-return Number.isFinite(exp) ? exp * 1000 : 0;
-} catch (_) {
-return 0;
-}
-};
-const rejected = (status, marker) => status === 401 && marker === 'session';
-
-let pending = null;
-let timer = 0;
-let reported = false;
-const schedule = () => {
-clearTimeout(timer);
-const at = expiresAt(token);
-if (parentOrigins.length && at) {
-timer = setTimeout(refresh, Math.max(at - EARLY_MS - Date.now(), 1000));
-}
-};
-function refresh() {
-if (!parentOrigins.length) return Promise.resolve(false);
-if (!pending) {
-pending = new Promise((resolve) => {
-const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
-byte.toString(16).padStart(2, '0'),
-).join('');
-let timeout = 0;
-const finish = (granted) => {
-removeEventListener('message', onMessage);
-clearTimeout(timeout);
-pending = null;
-if (granted) {
-token = granted;
-schedule();
-}
-resolve(Boolean(granted));
-};
-function onMessage(event) {
-const data = event.data;
-if (
-event.source !== parentWindow ||
-!parentOrigins.includes(event.origin) ||
-!data ||
-data.type !== 'ecto:artifact-mini-app-session-grant' ||
-data.version !== 1 ||
-data.nonce !== nonce
-) {
-return;
-}
-finish(typeof data.grant === 'string' && GRANT_SHAPE.test(data.grant) ? data.grant : '');
-}
-addEventListener('message', onMessage);
-timeout = setTimeout(() => finish(''), TIMEOUT_MS);
-parentOrigins.forEach((target) =>
-parentWindow.postMessage({type: 'ecto:artifact-mini-app-session-refresh', version: 1, nonce}, target),
-);
-});
-}
-return pending;
-}
-const deny = () => {
-if (reported || !framed) return;
-reported = true;
-parentWindow.postMessage(
-{
-type: 'ecto:artifact-mini-app-load-status',
-version: 1,
-status: 'error',
-stage: 'authorize_view',
-reason: 'authorization_denied',
-},
-parentOrigins.length === 1 ? parentOrigins[0] : '*',
-);
-};
-const recover = () =>
-refresh().then((granted) => {
-if (!granted) deny();
-return granted;
-});
-
-const nativeFetch = window.fetch;
-if (typeof nativeFetch === 'function') {
-const send = (base) => {
-const headers = new Headers(base.headers);
-headers.set(SESSION, token);
-return nativeFetch.call(window, new Request(base, {headers}));
-};
-window.fetch = function fetch(input, init) {
-let request;
-try {
-request = new Request(input, init);
-} catch (_) {
-return nativeFetch.call(window, input, init);
-}
-if (!sameOrigin(request.url) || request.headers.has(SESSION)) {
-return nativeFetch.call(window, request);
-}
-let replay = null;
-try {
-replay = request.clone();
-} catch (_) {}
-return send(request).then((response) => {
-if (!replay || !rejected(response.status, response.headers.get(REJECTED))) {
-return response;
-}
-return recover().then((granted) =>
-granted
-? send(replay).then((retried) => {
-if (rejected(retried.status, retried.headers.get(REJECTED))) deny();
-return retried;
-})
-: response,
-);
-});
-};
-}
-
-const xhr = window.XMLHttpRequest && XMLHttpRequest.prototype;
-if (xhr) {
-const open = xhr.open;
-const setRequestHeader = xhr.setRequestHeader;
-const xhrSend = xhr.send;
-const attach = new WeakMap();
-xhr.open = function (method, url) {
-attach.set(this, sameOrigin(String(url)));
-return open.apply(this, arguments);
-};
-xhr.setRequestHeader = function (header) {
-if (String(header).toLowerCase() === SESSION) attach.set(this, false);
-return setRequestHeader.apply(this, arguments);
-};
-xhr.send = function () {
-if (attach.get(this)) {
-setRequestHeader.call(this, SESSION, token);
-this.addEventListener(
-'loadend',
-() => {
-if (rejected(this.status, this.getResponseHeader(REJECTED))) recover();
-},
-{once: true},
-);
-}
-return xhrSend.apply(this, arguments);
-};
-}
-
-document.addEventListener('visibilitychange', () => {
-const at = expiresAt(token);
-if (document.visibilityState === 'visible' && at && at - EARLY_MS <= Date.now()) refresh();
-});
-schedule();
-})();</script><style data-metaai-safe-area="">:root { scroll-padding-top: var(--safe-area-scroll-padding-top, 0px); }
-[data-safe-area-inset-root]::before {
-background: inherit;
-content: "";
-height: var(--safe-area-inset-top, 0px);
-inset: 0 0 auto;
-pointer-events: none;
-position: fixed;
-z-index: 2147483647;
-}
-</style><script data-metaai-safe-area-runtime="">// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
-
-(() => {
-const params = new URLSearchParams(window.location.search);
-const rawInset = params.get('top_inset_px');
-const parsedInset = rawInset !== null && /^\d+$/.test(rawInset)
-? Number(rawInset)
-: 0;
-const topInset = params.get('has_top_banner') === '1'
-? Math.min(parsedInset, 256)
-: 0;
-document.documentElement.style.setProperty('--safe-area-inset-top', `${topInset}px`);
-document.documentElement.style.setProperty('--safe-area-scroll-padding-top', `${topInset}px`);
-
-function observeNavigation() {
-const root = document.getElementById('root');
-if (root === null) return;
-const observed = new Set();
-let scheduled = false;
-
-function syncScrollPadding() {
-const elements = new Set(root.querySelectorAll('[data-safe-area-sticky-top]'));
-for (const element of observed) {
-if (!elements.has(element)) {
-resizeObserver.unobserve(element);
-observed.delete(element);
-}
-}
-for (const element of elements) {
-if (!observed.has(element)) {
-resizeObserver.observe(element);
-observed.add(element);
-}
-}
-let padding = topInset;
-for (const element of elements) {
-const style = window.getComputedStyle(element);
-if (style.position !== 'sticky' && style.position !== 'fixed') continue;
-const top = Number.parseFloat(style.top);
-if (Number.isFinite(top)) {
-padding = Math.max(padding, top + element.getBoundingClientRect().height);
-}
-}
-document.documentElement.style.setProperty(
-'--safe-area-scroll-padding-top', `${Math.ceil(padding)}px`,
-);
-}
-
-function scheduleUpdate() {
-if (scheduled) return;
-scheduled = true;
-queueMicrotask(() => {
-scheduled = false;
-syncScrollPadding();
-});
-}
-
-const resizeObserver = new ResizeObserver(scheduleUpdate);
-const mutationObserver = new MutationObserver(scheduleUpdate);
-mutationObserver.observe(root, {
-attributeFilter: ['class', 'data-safe-area-sticky-top', 'hidden', 'style'],
-attributes: true,
-childList: true,
-subtree: true,
-});
-window.addEventListener('resize', scheduleUpdate);
-scheduleUpdate();
-}
-
-if (document.readyState === 'loading') {
-document.addEventListener('DOMContentLoaded', observeNavigation, {once: true});
-} else {
-observeNavigation();
-}
-})();
-</script><script data-metaai-records-guard="">// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
-
-// When the records API rejects a write because the app is at its record
-// limit, this page answers the next writes itself with the same rejection.
-// The answers come after a delay, under an exponential backoff, and one probe
-// write goes to the network per backoff window. A new record that the API
-// accepts, or a delete that removes a record, ends the backoff. The backoff
-// also ends when a write comes 60 s or more after the last window, and no probe
-// from the last 60 s is in flight. The state is in memory only.
-//
-// The compiled-HTML contract checks (`stateful_crud_contract.rs` and
-// `stateful_hosted_release.rs`) read this file as part of the app. So it must
-// not contain a quoted records action, a browser storage API, the JSON request
-// header or encoder, a quoted POST method, a collection argument, or a name
-// bound to a quoted word. It must also not call a network function with a
-// quoted URL.
-(() => {
-const nativeFetch = window.fetch;
-if (typeof nativeFetch !== 'function') return;
-const NativeRequest = window.Request;
-const NativeResponse = window.Response;
-const NativeURL = window.URL;
-const NativePromise = window.Promise;
-const parseJson = JSON.parse;
-const reflectApply = Reflect.apply;
-const startTimer = window.setTimeout.bind(window);
-const stopTimer = window.clearTimeout.bind(window);
-const monotonicNow = window.performance.now.bind(window.performance);
-
-const CAPACITY_STATUS = 409;
-const CAPACITY_BODY = '{"error":"artifact record limit reached"}';
-const FIRST_WINDOW_MS = 1000;
-const MAX_WINDOW_MS = 60000;
-const LOCAL_ANSWER_DELAY_MS = 500;
-const MAX_TRACKED_RECORDS = 2048;
-const actionName = operation => ['records', operation].join('.');
-const CREATE = actionName('create');
-const PUT = actionName('put');
-const GET = actionName('get');
-const LIST = actionName('list');
-const DELETE = actionName('delete');
-const OBSERVED_ACTIONS = [CREATE, PUT, GET, LIST, DELETE];
-const POST_METHOD = ['PO', 'ST'].join('');
-const LOCAL_HEADERS = [
-[['content', 'type'].join('-'), ['application', 'json'].join('/') + '; charset=utf-8'],
-['cache-control', 'no-store'],
-['x-metaai-records-guard', 'capacity'],
+const elevesBase = [
+{id:'a', nom:'Élève A - Lina', adresse:'12 Rue Paradis, Marseille', lat:43.2895, lng:5.3795, statut:'libre', prof:null},
+{id:'b', nom:'Élève B - Mathis', adresse:'25 Rue Paradis, Marseille', lat:43.2902, lng:5.3802, statut:'libre', prof:null},
+{id:'c', nom:'Élève C - Inès', adresse:'30 Rue Edmond Rostand, Marseille', lat:43.2915, lng:5.3815, statut:'libre', prof:null},
 ];
 
-// `epoch` changes when a window opens or closes. A rejected or accepted write
-// that was sent in an earlier epoch does not change the window, so the writes
-// that were in flight when the limit was reached count as one rejection.
-let streak = 0;
-let windowEndsAt = 0;
-let epoch = 0;
-let activeProbe = null;
-const knownIds = new Set();
-const knownKeys = new Map();
+let eleves = [...elevesBase];
+let map = L.map('map').setView([43.2895,5.3795],17);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OSM'}).addTo(map);
+let markers={}, myMarker=null, selectedId=null;
 
-function recordKey(collection, value) {
-return `${collection}\n${value}`;
+async function loadEleves(){
+if(!useSupabase){ return; }
+const {data,error} = await supabase.from('eleves').select('*');
+if(!error && data && data.length>0){ eleves = data; }
+refresh();
 }
 
-function rememberId(collection, id) {
-if (typeof id !== 'string') return;
-const key = recordKey(collection, id);
-knownIds.delete(key);
-knownIds.add(key);
-if (knownIds.size > MAX_TRACKED_RECORDS) knownIds.delete(knownIds.values().next().value);
+async function initSupabaseTable(){
+if(!useSupabase) return;
+// Vérifie si table vide, alors insère base
+const {data} = await supabase.from('eleves').select('id').limit(1);
+if(!data || data.length===0){
+for(let e of elevesBase){
+await supabase.from('eleves').upsert(e);
 }
-
-// `savedId` is null when the outcome of the write is unknown. Then the key
-// keeps the id that an earlier answer saved.
-function rememberIdempotencyKey(collection, idempotencyKey, savedId) {
-if (typeof idempotencyKey !== 'string') return;
-const key = recordKey(collection, idempotencyKey);
-const id = savedId ?? knownKeys.get(key) ?? null;
-knownKeys.delete(key);
-knownKeys.set(key, id);
-if (knownKeys.size > MAX_TRACKED_RECORDS) knownKeys.delete(knownKeys.keys().next().value);
-}
-
-function forgetRecord(savedId) {
-knownIds.delete(savedId);
-for (const [idempotencyKey, keySavedId] of knownKeys) {
-if (keySavedId === savedId) knownKeys.delete(idempotencyKey);
 }
 }
 
-function forgetId(collection, id) {
-if (typeof id === 'string') forgetRecord(recordKey(collection, id));
+function refresh(){
+document.getElementById('total').textContent = eleves.length;
+document.getElementById('libres').textContent = eleves.filter(e=>e.statut==='libre').length;
+document.getElementById('reserves').textContent = eleves.filter(e=>e.statut!=='libre').length;
+const ul=document.getElementById('liste'); ul.innerHTML='';
+eleves.forEach(e=>{
+const li=document.createElement('li');
+li.textContent = (e.statut==='libre'?'🟢':'🔴')+' '+e.nom+' - '+e.statut+(e.prof?' par '+e.prof:'');
+li.style.cursor='pointer'; li.onclick=()=>selectEleve(e.id);
+ul.appendChild(li);
+if(!markers[e.id]){
+markers[e.id]=L.marker([e.lat,e.lng]).addTo(map).on('click',()=>selectEleve(e.id));
 }
-
-function targetsActions(input, init) {
-const isRequest = input instanceof NativeRequest;
-const method = init?.method ?? (isRequest ? input.method : 'GET');
-if (String(method).toUpperCase() !== POST_METHOD) return false;
-const base = window.location.href;
-const url = isRequest ? input.url : String(input);
-return new NativeURL(url, base).href === new NativeURL('actions', base).href;
-}
-
-// Returns the body text, a promise of it for a Request body, or null when
-// the body cannot be JSON text.
-function requestBody(input, init) {
-const body = init?.body;
-if (body !== undefined && body !== null) return typeof body === 'string' ? body : null;
-return input instanceof NativeRequest ? input.clone().text() : null;
-}
-
-function requestSignal(input, init) {
-if (init !== undefined && init !== null && init.signal !== undefined) return init.signal;
-return input instanceof NativeRequest ? input.signal : null;
-}
-
-function parseAction(text) {
-let payload;
-try {
-payload = parseJson(text);
-} catch {
-return null;
-}
-if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
-const name = payload.action;
-if (!OBSERVED_ACTIONS.includes(name)) return null;
-const args = payload.args ?? {};
-if (typeof args !== 'object' || Array.isArray(args)) return null;
-const collection = args.collection ?? 'items';
-if (typeof collection !== 'string') return null;
-return {name, args, collection};
-}
-
-function isWrite(action) {
-return action.name === CREATE || action.name === PUT;
-}
-
-// The records API accepts these writes at the limit when their record
-// exists: a create that replays a known idempotency key, and a put to a known
-// record. A key or id is known when this page saw its record saved, or sent
-// it in a write whose outcome is unknown.
-function mayStillSucceed(action) {
-if (action.name === CREATE) {
-const idempotencyKey = action.args.idempotency_key;
-return typeof idempotencyKey === 'string'
-&& knownKeys.has(recordKey(action.collection, idempotencyKey));
-}
-const id = action.args.id;
-return typeof id === 'string' && knownIds.has(recordKey(action.collection, id));
-}
-
-function rememberUnknownOutcome(action) {
-if (action.name === CREATE) {
-rememberIdempotencyKey(action.collection, action.args.idempotency_key, null);
-} else {
-rememberId(action.collection, action.args.id);
-}
-}
-
-// The API rejects a known key or id for capacity only when its record does
-// not exist.
-function revokeExemption(action) {
-if (action.name === PUT) {
-forgetId(action.collection, action.args.id);
-return;
-}
-const key = recordKey(action.collection, action.args.idempotency_key);
-const savedId = knownKeys.get(key);
-knownKeys.delete(key);
-if (typeof savedId === 'string') forgetRecord(savedId);
-}
-
-// A probe that never settles stops holding writes back after the longest
-// window.
-function windowIsOpen(time) {
-if (time < windowEndsAt) return true;
-return activeProbe !== null && time - activeProbe.startedAt < MAX_WINDOW_MS;
-}
-
-function openWindow(sentEpoch) {
-if (sentEpoch !== epoch) return;
-streak += 1;
-windowEndsAt = monotonicNow() + Math.min(MAX_WINDOW_MS, FIRST_WINDOW_MS * 2 ** (streak - 1));
-epoch += 1;
-}
-
-function closeWindow() {
-if (streak === 0) return;
-streak = 0;
-windowEndsAt = 0;
-activeProbe = null;
-epoch += 1;
-}
-
-// The delay keeps an awaited retry loop from running on every microtask.
-function answerLocally(signal) {
-return new NativePromise((resolve, reject) => {
-if (signal?.aborted) {
-reject(signal.reason);
-return;
-}
-let timer = 0;
-const abort = () => {
-stopTimer(timer);
-reject(signal.reason);
-};
-timer = startTimer(() => {
-signal?.removeEventListener('abort', abort);
-resolve(new NativeResponse(CAPACITY_BODY, {status: CAPACITY_STATUS, headers: LOCAL_HEADERS}));
-}, LOCAL_ANSWER_DELAY_MS);
-signal?.addEventListener('abort', abort, {once: true});
+markers[e.id].setPopupContent(`<b>${e.nom}</b><br>${e.adresse}<br>${e.statut}`);
+const col=e.statut==='libre'?'green':'red';
+markers[e.id].setIcon(L.divIcon({className:'',html:`<div style="background:${col};width:20px;height:20px;border-radius:50%;border:3px solid white;box-shadow:0 0 5px black;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;font-weight:bold">${e.nom.includes('A')?'A':e.nom.includes('B')?'B':'C'}</div>`}));
 });
+if(selectedId) updatePanel();
+// Sauvegarde locale si pas supabase
+if(!useSupabase) localStorage.setItem('eleves-rt', JSON.stringify(eleves));
 }
 
-function responseData(text) {
-try {
-const payload = parseJson(text);
-return payload !== null && typeof payload === 'object' ? payload.data : undefined;
-} catch {
-return undefined;
-}
+function selectEleve(id){ selectedId=id; const e=eleves.find(x=>x.id===id); map.setView([e.lat,e.lng],18); markers[id].openPopup(); updatePanel(); }
+
+function updatePanel(){
+const e=eleves.find(x=>x.id===selectedId); if(!e) return;
+document.getElementById('eleveNom').textContent=e.nom;
+document.getElementById('eleveAdresse').textContent=e.adresse;
+document.getElementById('eleveStatut').textContent='Statut: '+e.statut.toUpperCase()+(e.prof?' ('+e.prof+')':'');
+const cur=document.getElementById('profSelect').value;
+const rb=document.getElementById('reserveBtn'); const lb=document.getElementById('libererBtn');
+if(e.statut==='libre'){ rb.disabled=false; rb.textContent='Réserver pour '+cur; lb.style.display='none'; }
+else{ rb.disabled=true; rb.textContent=e.prof===cur?'Déjà à toi':'Déjà pris par '+e.prof; lb.style.display=e.prof===cur?'inline-block':'none'; }
 }
 
-function track(action, data) {
-const collection = action.collection;
-switch (action.name) {
-case LIST:
-if (Array.isArray(data?.records)) {
-for (const record of data.records) rememberId(collection, record?.id);
+document.getElementById('reserveBtn').onclick=async()=>{
+const e=eleves.find(x=>x.id===selectedId); const cur=document.getElementById('profSelect').value;
+if(e.statut!=='libre'){ alert('Trop tard ! '+e.prof+' l a déjà réservé'); return; }
+e.statut='reserve'; e.prof=cur;
+if(useSupabase){
+await supabase.from('eleves').update({statut:'reserve', prof:cur}).eq('id', e.id).eq('statut','libre');
 }
-return;
-case DELETE:
-if (data === true) {
-forgetId(collection, action.args.id);
-closeWindow();
-}
-return;
-case CREATE:
-if (typeof data?.id === 'string') {
-rememberIdempotencyKey(collection, action.args.idempotency_key, recordKey(collection, data.id));
-}
-rememberId(collection, data?.id);
-return;
-default:
-rememberId(collection, data?.id);
-}
-}
+refresh();
+};
 
-async function observe(action, response, sent) {
-try {
-const status = response.status;
-const succeeded = status >= 200 && status < 300;
-// A write that the API accepts only below the limit proves free space.
-if (succeeded && isWrite(action) && !sent.mayStillSucceed && sent.epoch === epoch) {
-closeWindow();
-}
-const capacityCandidate = status === CAPACITY_STATUS && isWrite(action);
-if (!succeeded && !capacityCandidate) return;
-const text = await response.clone().text();
-if (succeeded) {
-track(action, responseData(text));
-} else if (text === CAPACITY_BODY) {
-if (sent.mayStillSucceed) revokeExemption(action);
-openWindow(sent.epoch);
-}
-} finally {
-if (sent.probe !== null && activeProbe === sent.probe) activeProbe = null;
-}
-}
+document.getElementById('libererBtn').onclick=async()=>{
+const e=eleves.find(x=>x.id===selectedId);
+e.statut='libre'; e.prof=null;
+if(useSupabase){ await supabase.from('eleves').update({statut:'libre', prof:null}).eq('id', e.id); }
+refresh();
+};
 
-function handle(action, send, signal) {
-if (action === null) return send();
-const sent = {epoch, mayStillSucceed: false, probe: null};
-if (isWrite(action)) {
-sent.mayStillSucceed = mayStillSucceed(action);
-if (streak > 0 && !sent.mayStillSucceed) {
-const time = monotonicNow();
-if (windowIsOpen(time)) return answerLocally(signal);
-if (time - windowEndsAt < MAX_WINDOW_MS) {
-activeProbe = {startedAt: time};
-sent.probe = activeProbe;
+document.getElementById('profSelect').onchange=()=>updatePanel();
+document.getElementById('locateBtn').onclick=()=>{
+navigator.geolocation.watchPosition(pos=>{
+const {latitude,longitude}=pos.coords;
+if(!myMarker){ myMarker=L.marker([latitude,longitude],{icon:L.divIcon({html:'<div style="background:#2a5bd7;width:22px;height:22px;border-radius:50%;border:3px solid white"></div>'})}).addTo(map).bindPopup('Toi').openPopup(); }
+else myMarker.setLatLng([latitude,longitude]);
+map.setView([latitude,longitude],17);
+}, err=>alert(err.message), {enableHighAccuracy:true});
+};
+
+// Charge
+(async()=>{
+const saved=localStorage.getItem('eleves-rt');
+if(saved && !useSupabase){ try{eleves=JSON.parse(saved);}catch(e){} }
+refresh();
+if(useSupabase){
+await initSupabaseTable();
+await loadEleves();
+// Abonnement temps réel
+supabase.channel('eleves-changes').on('postgres_changes',{event:'*', schema:'public', table:'eleves'}, payload=>{
+const idx=eleves.findIndex(x=>x.id===payload.new.id);
+if(idx>=0) eleves[idx]=payload.new;
+else eleves.push(payload.new);
+// Notification
+if(payload.new.statut==='reserve'){
+const cur=document.getElementById('profSelect').value;
+if(payload.new.prof!==cur){
+alert(`🔔 ${payload.new.nom} vient d être réservé par ${payload.new.prof} !`);
+}
+}
+refresh();
+}).subscribe();
+// Polling de secours toutes les 3 sec
+setInterval(loadEleves, 3000);
 } else {
-// Another client or the agent can free space where this page cannot
-// see it. So after a quiet period the write goes out as a normal write.
-closeWindow();
-sent.epoch = epoch;
-}
-}
-}
-return send().then(
-response => observe(action, response, sent).then(() => response, () => response),
-error => {
-if (sent.probe !== null && activeProbe === sent.probe) activeProbe = null;
-// A write that fails or is aborted after it is sent can still save its
-// record.
-if (isWrite(action)) rememberUnknownOutcome(action);
-throw error;
-},
-);
-}
-
-function guardedFetch(input, init) {
-const self = this;
-const args = arguments;
-const send = () => reflectApply(nativeFetch, self, args);
-let body;
-let signal;
-try {
-if (!targetsActions(input, init)) return send();
-body = requestBody(input, init);
-signal = requestSignal(input, init);
-} catch {
-return send();
-}
-if (body === null) return send();
-if (typeof body === 'string') return handle(parseAction(body), send, signal);
-return body.then(text => handle(parseAction(text), send, signal), () => send());
-}
-
-try {
-window.fetch = guardedFetch;
-} catch {
-// A page that made the network function read-only keeps its own function.
+// Sans supabase, polling local toutes les 2 sec pour simuler (ne marche que sur même appareil)
+setInterval(()=>{
+const s=localStorage.getItem('eleves-rt');
+if(s){ try{ const parsed=JSON.parse(s); if(JSON.stringify(parsed)!==JSON.stringify(eleves)){ eleves=parsed; refresh(); } }catch(e){} }
+},2000);
+console.log("Mode local - Pour du vrai temps réel multi-appareils, crée un projet Supabase et remplace SUPABASE_URL et SUPABASE_KEY en haut du fichier. Instructions dans le fichier.");
 }
 })();
-</script><script data-metaai-app-links="">(()=>{var W=Object.defineProperty;var o=(t,n)=>W(t,"name",{value:n,configurable:!0});(()=>{const t=window.open,n=window.fetch,r=HTMLAnchorElement.prototype.click,i=Event.prototype.preventDefault,c=Event.prototype.stopPropagation,f=Event.prototype.stopImmediatePropagation,a=Object.getOwnPropertyDescriptor(Event.prototype,"defaultPrevented").get,u=Object.getOwnPropertyDescriptor(Event.prototype,"cancelBubble"),h="/__metaai/blobs/",x=4e3,g=new WeakMap,E=new WeakSet,s=[];let l=null,b=null,m=null,d=null;function p(t){if(typeof t!="string"||t.trim()==="")return null;let e;try{e=new URL(t,document.baseURI)}catch{return null}return(e.protocol==="http:"||e.protocol==="https:")&&e.origin===window.location.origin?e:null}o(p,"sameAppUrl");function k(t){const e=t.trim(),n=e.toLowerCase();return n===""||n==="_self"||n==="_parent"||n==="_top"?!1:![...document.getElementsByName(e)].some(t=>/^(IFRAME|OBJECT|EMBED)$/.test(t.tagName))}o(k,"opensNewContext");function T(t){return/^\/(__metaai|api|assets)\//.test(t.pathname)}o(T,"isFileRoute");function M(t){const e=new URL(window.location.href);return t.hash!==""&&!/^#!?\//.test(t.hash)&&t.pathname===e.pathname&&t.search===e.search}o(M,"samePage");function R(t){return(t.querySelector("img[alt]")?.getAttribute("alt")||t.getAttribute("aria-label")||t.textContent||"").trim().slice(0,200)}o(R,"labelFor");function y(t,e){const n=document.createElement(t);return n.style.cssText=e,n}o(y,"styled");function P(t){const e=Uint8Array.from(atob(t.replace(/-/g,"+").replace(/_/g,"/")),t=>t.charCodeAt(0));return new TextDecoder("utf-8",{fatal:!0}).decode(e)}o(P,"textOf");function S(t){let e={disposition:t.searchParams.get("disposition")};try{const n=t.searchParams.get("token");n&&t.pathname.startsWith(h)&&(e=JSON.parse(P(n.split(".")[0]))||e)}catch{}return e.disposition==="attachment"}o(S,"isAttachment");function D(){try{const t=document.querySelectorAll(":modal");return t[t.length-1]||document.body}catch{return document.body}}o(D,"layerHost");function H(t,e){d===null&&(d=y("div","position:fixed;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;"),d.setAttribute("role","status"),d.setAttribute("data-metaai-link-status","")),d.parentNode!==e&&e.append(d);const n=d;n.textContent="",window.setTimeout(()=>{n.textContent=t},100)}o(H,"announce");function N(){b?.remove();const t=D();m?.isConnected||(m=document.createElement("style"),m.textContent="[data-metaai-link-note]::backdrop{display:none!important;background:none!important;backdrop-filter:none!important}",(document.head||document.documentElement).append(m));const e="This app cannot open its pages in a new tab.",n=y("div","position:fixed;inset:auto 16px calc(var(--safe-area-inset-bottom, 0px) + 24px);z-index:2147483647;box-sizing:border-box;width:auto;height:auto;max-width:360px;margin:0 auto;padding:12px 16px;border:0;border-radius:10px;background:rgba(17,17,17,0.92);color:#fff;font:400 14px/1.4 system-ui,sans-serif;text-align:center;overflow:visible;pointer-events:none;");n.setAttribute("data-metaai-link-note",""),n.setAttribute("aria-hidden","true"),n.textContent=e;const r=typeof n.showPopover=="function";r&&n.setAttribute("popover","manual"),t.append(n),r&&n.showPopover(),b=n,H(e,t),window.setTimeout(()=>{n.remove(),b===n&&(b=null)},x)}o(N,"showNote");function O(t){for(const e of t)if(!(!(e instanceof Element)||e===document.body||!e.isConnected||typeof e.focus!="function")&&(e.focus({preventScroll:!0}),document.activeElement===e))return}o(O,"focusBack");function w(){if(l===null)return;const{root:t,opener:e,before:n}=l;l=null,t.open&&t.close(),t.remove(),O([e,n,...s.slice().reverse()])}o(w,"closeViewer");function A(t,e,n){const r=document.activeElement;w();const c=typeof HTMLDialogElement=="function"&&typeof HTMLDialogElement.prototype.showModal=="function",f="var(--safe-area-inset-top, 0px)",a=y(c?"dialog":"div",`position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;box-sizing:border-box;width:100%;height:100%;max-width:none;max-height:none;margin:0;border:0;padding:calc(${f} + 68px) 16px 24px;background:rgba(0,0,0,0.88);color:#fff;overflow:hidden;overscroll-behavior:contain;pointer-events:auto;`);a.setAttribute("data-metaai-file-viewer",""),a.setAttribute("aria-label",e||"File"),c||(a.setAttribute("role","dialog"),a.setAttribute("aria-modal","true"));const u=y("button",`position:absolute;top:calc(${f} + 12px);right:12px;width:44px;height:44px;padding:0;border:0;border-radius:22px;background:rgba(255,255,255,0.18);color:#fff;font:400 28px/44px system-ui,sans-serif;cursor:pointer;pointer-events:auto;`);u.type="button",u.textContent="\xD7",u.setAttribute("aria-label","Close"),u.setAttribute("data-metaai-file-viewer-close","");const h=y("img","display:block;flex:0 1 auto;min-height:0;max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;");h.alt=e,h.addEventListener("error",()=>{const t=y("p","margin:0;font:400 15px/1.4 system-ui,sans-serif;text-align:center;");t.textContent="This file cannot be shown here.",h.replaceWith(t)},{once:!0}),h.src=t,a.append(u,h),a.addEventListener("cancel",t=>{Reflect.apply(i,t,[]),l?.root===a&&w()}),a.addEventListener("close",()=>{l?.root===a&&w()}),l={root:a,opener:n,before:r},document.body.append(a),c&&a.showModal(),u.focus({preventScroll:!0})}o(A,"showViewer");function F(t,e,r){const i=new AbortController;Reflect.apply(n,window,[t.href,{signal:i.signal}]).then(n=>{i.abort(),n.ok?window.location.assign(t.href):A(t.href,e,r)},()=>A(t.href,e,r))}o(F,"download");function C(t,e,n){T(t)?S(t)?F(t,e,n):A(t.href,e,n):M(t)?window.location.hash=t.hash:N()}o(C,"openOutside");function _(n,r){let i=null,c=0,f=n.href;const a=o(e=>{try{const n=p(String(e));if(n===null){i!==null&&l===i&&w(),i=null,c=0,Reflect.apply(t,window,[String(e)]);return}const a=l;C(n,"",r),i=l!==a?l:null,c=i===null?Date.now()+x:0,f=n.href}catch{}},"go"),u={get href(){return f},set href(t){a(t)},assign:a,replace:a,reload(){},toString:o(()=>f,"toString")};return a(n.href),{opener:null,get closed(){return i!==null?l!==i:Date.now()>=c},get location(){return u},set location(t){a(t)},focus(){},blur(){},close(){i!==null&&l===i&&w(),i=null,c=0},postMessage(){},addEventListener(){},removeEventListener(){}}}o(_,"standIn");function B(t){if(l===null)return!1;const e=t.relatedTarget;return t.composedPath().includes(l.root)||e instanceof Node&&l.root.contains(e)}o(B,"insideViewer");function I(t){const e=[...l.root.querySelectorAll("button, a[href]")],n=e.indexOf(document.activeElement);(t.shiftKey?e[n<=0?e.length-1:n-1]:e[n<0||n===e.length-1?0:n+1])?.focus()}o(I,"moveFocus");function U(t){try{if(l!==null&&!l.root.isConnected&&(l=null),l===null){t.type==="focusin"&&t.target instanceof Element&&s[s.length-1]!==t.target&&(s.push(t.target),s.length>5&&s.shift());return}if(t.type==="keydown"&&(t.key==="Escape"||t.key==="Tab")){Reflect.apply(i,t,[]),Reflect.apply(f,t,[]),t.key==="Escape"?w():I(t);return}if(!B(t)||(Reflect.apply(f,t,[]),t.type!=="click"))return;if(t.detail>1){Reflect.apply(i,t,[]);return}const e=t.target;(e===l.root||e instanceof Element&&e.closest("[data-metaai-file-viewer-close]"))&&w()}catch{}}o(U,"shield");function $(t,e){return t instanceof HTMLInputElement?/^(checkbox|radio|file|color)$/.test(t.type)||/^(submit|reset|image)$/.test(t.type)&&t.form!==null:t instanceof HTMLButtonElement?t.type!=="button"&&t.form!==null:t instanceof HTMLLabelElement?t.control!==null&&!t.control.contains(e):t instanceof HTMLMediaElement?t.controls:t instanceof HTMLElement&&t.tagName==="SUMMARY"&&t.parentElement?.tagName==="DETAILS"}o($,"ownClickAction");function j(t){for(const e of t){if(e instanceof Element&&e.matches("a[href], area[href]"))return e;if($(e,t[0]))return null}return null}o(j,"anchorFor");function V(t){const e=g.get(t);if(!(e===void 0||e.held)){g.delete(t);try{if(e.host.removeEventListener(t.type,e.last),Reflect.apply(a,t,[]))return;e.done=!0,Reflect.apply(i,t,[]),C(e.url,e.label,e.opener)}catch{}}}o(V,"decide");function z(t){const e=g.get(t);if(e!==void 0){g.delete(t);try{e.host.removeEventListener(t.type,e.last),e.held&&!e.appCancelled&&C(e.url,e.label,e.opener)}catch{}}}o(z,"settle");function K(t,n){const r=[];for(const i of t)try{const t=i[n];if(typeof t!="function"||E.has(t))continue;const c=o(function(...e){const n=Reflect.apply(t,this,e),r=n===!1?g.get(e[0]):void 0;return r&&(r.appCancelled=!0),n},"wrapper");E.add(c),i[n]=c,r.push(()=>{i[n]===c&&(i[n]=t)})}catch{}return()=>r.forEach(t=>t())}o(K,"watchHandlers");function L(t,n,r,h,x,E){const s={url:n,label:r,opener:h,host:x,held:!1,done:!1,appCancelled:!1,last:null};s.last=e=>{e===t&&V(t)},g.set(t,s),x.addEventListener(t.type,s.last);const l=K(E,`on${t.type}`),b=o(()=>{l(),z(t)},"end");window.setTimeout(b,0);const m=o(()=>{s.held||s.done||g.get(t)!==s||(s.held=!0,Reflect.apply(a,t,[])?s.appCancelled=!0:Reflect.apply(i,t,[]))},"hold"),d=o(t=>s.held||s.done?s.appCancelled:Reflect.apply(a,t,[]),"appView"),p=o((e,n)=>Object.defineProperty(t,e,{configurable:!0,...n}),"define");return p("stopPropagation",{writable:!0,value(){return m(),Reflect.apply(c,this,arguments)}}),p("stopImmediatePropagation",{writable:!0,value(){return m(),Reflect.apply(f,this,arguments)}}),p("preventDefault",{writable:!0,value(){return s.appCancelled=!0,Reflect.apply(i,this,arguments)}}),p("defaultPrevented",{get(){return d(this)}}),p("returnValue",{get(){return!d(this)},set(t){t||(s.appCancelled=!0,Reflect.apply(i,this,[]))}}),u?.get&&u.set&&p("cancelBubble",{get(){return Reflect.apply(u.get,this,[])},set(t){t&&m(),Reflect.apply(u.set,this,[t])}}),b}o(L,"track");function v(t){try{if(!t.cancelable||t.button!==(t.type==="auxclick"?1:0))return;const e=t.composedPath(),n=j(e);if(!n||n.hasAttribute("download")||n.isContentEditable||!t.bubbles&&e[0]!==n)return;const r=p(n.getAttribute("href"));if(r===null)return;(t.type==="auxclick"||t.ctrlKey||t.metaKey||t.shiftKey||k(n.getAttribute("target")||""))&&L(t,r,R(n),n,t.bubbles?window:n,e)}catch{}}o(v,"remember");try{for(const t of["pointerdown","pointerup","mousedown","mouseup","touchstart","touchend","click","auxclick","dblclick","focusin","focusout","keydown","keyup"])window.addEventListener(t,U,!0);window.addEventListener("click",v,!0),window.addEventListener("auxclick",v,!0),window.open=o(function(n,r){try{const t=r==null?"":String(r);if(t.trim()===""||k(t)){const t=p(n==null?"":String(n));if(t!==null)return _(t,document.activeElement)}}catch{}return Reflect.apply(t,this,arguments)},"open"),HTMLAnchorElement.prototype.click=o(function(){try{if(!this.isConnected&&!this.hasAttribute("download")){const t=p(this.getAttribute("href"));if(t!==null&&k(this.getAttribute("target")||"")){const e=new MouseEvent("click",{bubbles:!0,cancelable:!0,composed:!0,view:window}),n=[];for(let t=this;t!==null;t=t.parentNode)n.push(t);const r=L(e,t,R(this),document.activeElement,this.getRootNode(),n);this.dispatchEvent(e),r();return}}}catch{}return Reflect.apply(r,this,arguments)},"click")}catch{}})();})();
 </script>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>React Artifact</title>
-<script>(function installDevicePermissionRuntime() {
-if (window.parent === window)
-return;
-let parentOrigin;
-try {
-const embeddingOrigin = window.location.ancestorOrigins?.[0] || document.referrer, { hostname, origin, port, protocol } = new URL(embeddingOrigin), supportedHost = hostname === "meta.ai" || hostname === "ecto1.ai" || [".meta.ai", ".ecto1.ai", ".internalfb.com", ".hatch.club"].some((suffix) => hostname.endsWith(suffix));
-if (hostname === "localhost" && (protocol === "http:" || protocol === "https:") || protocol === "https:" && port === "" && supportedHost)
-parentOrigin = origin;
-} catch {
-return;
-}
-if (!parentOrigin)
-return;
-function request(capability) {
-try {
-const policy = document.permissionsPolicy || document.featurePolicy;
-if (navigator.userActivation?.isActive === !0 && policy?.allowsFeature(capability) === !1)
-window.parent.postMessage({ type: "ecto:artifact-device-permission-request", version: 1, capability }, parentOrigin);
-} catch {}
-}
-function hasAudio(constraints) {
-for (let value = constraints;value != null; value = Object.getPrototypeOf(value)) {
-const descriptor = Object.getOwnPropertyDescriptor(value, "audio");
-if (descriptor)
-return Boolean(descriptor.value);
-}
-return !1;
-}
-function wrap(receiver, name, capability, enabled) {
-try {
-if ((document.permissionsPolicy || document.featurePolicy)?.allowsFeature(capability) !== !1)
-return;
-const native = receiver?.[name];
-if (typeof native !== "function")
-return;
-receiver[name] = function() {
-try {
-if (this === receiver && enabled(arguments))
-request(capability);
-} catch {}
-return Reflect.apply(native, this, arguments);
-};
-} catch {}
-}
-wrap(navigator.mediaDevices, "getUserMedia", "microphone", (args) => hasAudio(args[0]));
-const hasPositionCallback = (args) => typeof args[0] === "function";
-wrap(navigator.geolocation, "getCurrentPosition", "geolocation", hasPositionCallback);
-wrap(navigator.geolocation, "watchPosition", "geolocation", hasPositionCallback);
-})();</script>
-<style>@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap');
+<script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script>
 
-*, ::before, ::after{
---tw-border-spacing-x: 0;
---tw-border-spacing-y: 0;
---tw-translate-x: 0;
---tw-translate-y: 0;
---tw-rotate: 0;
---tw-skew-x: 0;
---tw-skew-y: 0;
---tw-scale-x: 1;
---tw-scale-y: 1;
---tw-pan-x: ;
---tw-pan-y: ;
---tw-pinch-zoom: ;
---tw-scroll-snap-strictness: proximity;
---tw-gradient-from-position: ;
---tw-gradient-via-position: ;
---tw-gradient-to-position: ;
---tw-ordinal: ;
---tw-slashed-zero: ;
---tw-numeric-figure: ;
---tw-numeric-spacing: ;
---tw-numeric-fraction: ;
---tw-ring-inset: ;
---tw-ring-offset-width: 0px;
---tw-ring-offset-color: #fff;
---tw-ring-color: rgb(59 130 246 / 0.5);
---tw-ring-offset-shadow: 0 0 #0000;
---tw-ring-shadow: 0 0 #0000;
---tw-shadow: 0 0 #0000;
---tw-shadow-colored: 0 0 #0000;
---tw-blur: ;
---tw-brightness: ;
---tw-contrast: ;
---tw-grayscale: ;
---tw-hue-rotate: ;
---tw-invert: ;
---tw-saturate: ;
---tw-sepia: ;
---tw-drop-shadow: ;
---tw-backdrop-blur: ;
---tw-backdrop-brightness: ;
---tw-backdrop-contrast: ;
---tw-backdrop-grayscale: ;
---tw-backdrop-hue-rotate: ;
---tw-backdrop-invert: ;
---tw-backdrop-opacity: ;
---tw-backdrop-saturate: ;
---tw-backdrop-sepia: ;
---tw-contain-size: ;
---tw-contain-layout: ;
---tw-contain-paint: ;
---tw-contain-style: ;
-}
-
-::backdrop{
---tw-border-spacing-x: 0;
---tw-border-spacing-y: 0;
---tw-translate-x: 0;
---tw-translate-y: 0;
---tw-rotate: 0;
---tw-skew-x: 0;
---tw-skew-y: 0;
---tw-scale-x: 1;
---tw-scale-y: 1;
---tw-pan-x: ;
---tw-pan-y: ;
---tw-pinch-zoom: ;
---tw-scroll-snap-strictness: proximity;
---tw-gradient-from-position: ;
---tw-gradient-via-position: ;
---tw-gradient-to-position: ;
---tw-ordinal: ;
---tw-slashed-zero: ;
---tw-numeric-figure: ;
---tw-numeric-spacing: ;
---tw-numeric-fraction: ;
---tw-ring-inset: ;
---tw-ring-offset-width: 0px;
---tw-ring-offset-color: #fff;
---tw-ring-color: rgb(59 130 246 / 0.5);
---tw-ring-offset-shadow: 0 0 #0000;
---tw-ring-shadow: 0 0 #0000;
---tw-shadow: 0 0 #0000;
---tw-shadow-colored: 0 0 #0000;
---tw-blur: ;
---tw-brightness: ;
---tw-contrast: ;
---tw-grayscale: ;
---tw-hue-rotate: ;
---tw-invert: ;
---tw-saturate: ;
---tw-sepia: ;
---tw-drop-shadow: ;
---tw-backdrop-blur: ;
---tw-backdrop-brightness: ;
---tw-backdrop-contrast: ;
---tw-backdrop-grayscale: ;
---tw-backdrop-hue-rotate: ;
---tw-backdrop-invert: ;
---tw-backdrop-opacity: ;
---tw-backdrop-saturate: ;
---tw-backdrop-sepia: ;
---tw-contain-size: ;
---tw-contain-layout: ;
---tw-contain-paint: ;
---tw-contain-style: ;
-}
-
-/*
-! tailwindcss v3.4.18 | MIT License | https://tailwindcss.com
-*/
-
-/*
-1. Prevent padding and border from affecting element width. (https://github.com/mozdevs/cssremedy/issues/4)
-2. Allow adding a border to an element by just adding a border-width. (https://github.com/tailwindcss/tailwindcss/pull/116)
-*/
-
-*,
-::before,
-::after {
-box-sizing: border-box;
-/* 1 */
-border-width: 0;
-/* 2 */
-border-style: solid;
-/* 2 */
-border-color: #e5e7eb;
-/* 2 */
-}
-
-::before,
-::after {
---tw-content: '';
-}
-
-/*
-1. Use a consistent sensible line-height in all browsers.
-2. Prevent adjustments of font size after orientation changes in iOS.
-3. Use a more readable tab size.
-4. Use the user's configured `sans` font-family by default.
-5. Use the user's configured `sans` font-feature-settings by default.
-6. Use the user's configured `sans` font-variation-settings by default.
-7. Disable tap highlights on iOS
-*/
-
-html,
-:host {
-line-height: 1.5;
-/* 1 */
--webkit-text-size-adjust: 100%;
-/* 2 */
--moz-tab-size: 4;
-/* 3 */
--o-tab-size: 4;
-tab-size: 4;
-/* 3 */
-font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-/* 4 */
-font-feature-settings: normal;
-/* 5 */
-font-variation-settings: normal;
-/* 6 */
--webkit-tap-highlight-color: transparent;
-/* 7 */
-}
-
-/*
-1. Remove the margin in all browsers.
-2. Inherit line-height from `html` so users can set them as a class directly on the `html` element.
-*/
-
-body {
-margin: 0;
-/* 1 */
-line-height: inherit;
-/* 2 */
-}
-
-/*
-1. Add the correct height in Firefox.
-2. Correct the inheritance of border color in Firefox. (https://bugzilla.mozilla.org/show_bug.cgi?id=190655)
-3. Ensure horizontal rules are visible by default.
-*/
-
-hr {
-height: 0;
-/* 1 */
-color: inherit;
-/* 2 */
-border-top-width: 1px;
-/* 3 */
-}
-
-/*
-Add the correct text decoration in Chrome, Edge, and Safari.
-*/
-
-abbr:where([title]) {
--webkit-text-decoration: underline dotted;
-text-decoration: underline dotted;
-}
-
-/*
-Remove the default font size and weight for headings.
-*/
-
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-font-size: inherit;
-font-weight: inherit;
-}
-
-/*
-Reset links to optimize for opt-in styling instead of opt-out.
-*/
-
-a {
-color: inherit;
-text-decoration: inherit;
-}
-
-/*
-Add the correct font weight in Edge and Safari.
-*/
-
-b,
-strong {
-font-weight: bolder;
-}
-
-/*
-1. Use the user's configured `mono` font-family by default.
-2. Use the user's configured `mono` font-feature-settings by default.
-3. Use the user's configured `mono` font-variation-settings by default.
-4. Correct the odd `em` font sizing in all browsers.
-*/
-
-code,
-kbd,
-samp,
-pre {
-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-/* 1 */
-font-feature-settings: normal;
-/* 2 */
-font-variation-settings: normal;
-/* 3 */
-font-size: 1em;
-/* 4 */
-}
-
-/*
-Add the correct font size in all browsers.
-*/
-
-small {
-font-size: 80%;
-}
-
-/*
-Prevent `sub` and `sup` elements from affecting the line height in all browsers.
-*/
-
-sub,
-sup {
-font-size: 75%;
-line-height: 0;
-position: relative;
-vertical-align: baseline;
-}
-
-sub {
-bottom: -0.25em;
-}
-
-sup {
-top: -0.5em;
-}
-
-/*
-1. Remove text indentation from table contents in Chrome and Safari. (https://bugs.chromium.org/p/chromium/issues/detail?id=999088, https://bugs.webkit.org/show_bug.cgi?id=201297)
-2. Correct table border color inheritance in all Chrome and Safari. (https://bugs.chromium.org/p/chromium/issues/detail?id=935729, https://bugs.webkit.org/show_bug.cgi?id=195016)
-3. Remove gaps between table borders by default.
-*/
-
-table {
-text-indent: 0;
-/* 1 */
-border-color: inherit;
-/* 2 */
-border-collapse: collapse;
-/* 3 */
-}
-
-/*
-1. Change the font styles in all browsers.
-2. Remove the margin in Firefox and Safari.
-3. Remove default padding in all browsers.
-*/
-
-button,
-input,
-optgroup,
-select,
-textarea {
-font-family: inherit;
-/* 1 */
-font-feature-settings: inherit;
-/* 1 */
-font-variation-settings: inherit;
-/* 1 */
-font-size: 100%;
-/* 1 */
-font-weight: inherit;
-/* 1 */
-line-height: inherit;
-/* 1 */
-letter-spacing: inherit;
-/* 1 */
-color: inherit;
-/* 1 */
-margin: 0;
-/* 2 */
-padding: 0;
-/* 3 */
-}
-
-/*
-Remove the inheritance of text transform in Edge and Firefox.
-*/
-
-button,
-select {
-text-transform: none;
-}
-
-/*
-1. Correct the inability to style clickable types in iOS and Safari.
-2. Remove default button styles.
-*/
-
-button,
-input:where([type='button']),
-input:where([type='reset']),
-input:where([type='submit']) {
--webkit-appearance: button;
-/* 1 */
-background-color: transparent;
-/* 2 */
-background-image: none;
-/* 2 */
-}
-
-/*
-Use the modern Firefox focus style for all focusable elements.
-*/
-
-:-moz-focusring {
-outline: auto;
-}
-
-/*
-Remove the additional `:invalid` styles in Firefox. (https://github.com/mozilla/gecko-dev/blob/2f9eacd9d3d995c937b4251a5557d95d494c9be1/layout/style/res/forms.css#L728-L737)
-*/
-
-:-moz-ui-invalid {
-box-shadow: none;
-}
-
-/*
-Add the correct vertical alignment in Chrome and Firefox.
-*/
-
-progress {
-vertical-align: baseline;
-}
-
-/*
-Correct the cursor style of increment and decrement buttons in Safari.
-*/
-
-::-webkit-inner-spin-button,
-::-webkit-outer-spin-button {
-height: auto;
-}
-
-/*
-1. Correct the odd appearance in Chrome and Safari.
-2. Correct the outline style in Safari.
-*/
-
-[type='search'] {
--webkit-appearance: textfield;
-/* 1 */
-outline-offset: -2px;
-/* 2 */
-}
-
-/*
-Remove the inner padding in Chrome and Safari on macOS.
-*/
-
-::-webkit-search-decoration {
--webkit-appearance: none;
-}
-
-/*
-1. Correct the inability to style clickable types in iOS and Safari.
-2. Change font properties to `inherit` in Safari.
-*/
-
-::-webkit-file-upload-button {
--webkit-appearance: button;
-/* 1 */
-font: inherit;
-/* 2 */
-}
-
-/*
-Add the correct display in Chrome and Safari.
-*/
-
-summary {
-display: list-item;
-}
-
-/*
-Removes the default spacing and border for appropriate elements.
-*/
-
-blockquote,
-dl,
-dd,
-h1,
-h2,
-h3,
-h4,
-h5,
-h6,
-hr,
-figure,
-p,
-pre {
-margin: 0;
-}
-
-fieldset {
-margin: 0;
-padding: 0;
-}
-
-legend {
-padding: 0;
-}
-
-ol,
-ul,
-menu {
-list-style: none;
-margin: 0;
-padding: 0;
-}
-
-/*
-Reset default styling for dialogs.
-*/
-
-dialog {
-padding: 0;
-}
-
-/*
-Prevent resizing textareas horizontally by default.
-*/
-
-textarea {
-resize: vertical;
-}
-
-/*
-1. Reset the default placeholder opacity in Firefox. (https://github.com/tailwindlabs/tailwindcss/issues/3300)
-2. Set the default placeholder color to the user's configured gray 400 color.
-*/
-
-input::-moz-placeholder, textarea::-moz-placeholder {
-opacity: 1;
-/* 1 */
-color: #9ca3af;
-/* 2 */
-}
-
-input::placeholder,
-textarea::placeholder {
-opacity: 1;
-/* 1 */
-color: #9ca3af;
-/* 2 */
-}
-
-/*
-Set the default cursor for buttons.
-*/
-
-button,
-[role="button"] {
-cursor: pointer;
-}
-
-/*
-Make sure disabled buttons don't get the pointer cursor.
-*/
-
-:disabled {
-cursor: default;
-}
-
-/*
-1. Make replaced elements `display: block` by default. (https://github.com/mozdevs/cssremedy/issues/14)
-2. Add `vertical-align: middle` to align replaced elements more sensibly by default. (https://github.com/jensimmons/cssremedy/issues/14#issuecomment-634934210)
-This can trigger a poorly considered lint error in some tools but is included by design.
-*/
-
-img,
-svg,
-video,
-canvas,
-audio,
-iframe,
-embed,
-object {
-display: block;
-/* 1 */
-vertical-align: middle;
-/* 2 */
-}
-
-/*
-Constrain images and videos to the parent width and preserve their intrinsic aspect ratio. (https://github.com/mozdevs/cssremedy/issues/14)
-*/
-
-img,
-video {
-max-width: 100%;
-height: auto;
-}
-
-/* Make elements with the HTML hidden attribute stay hidden by default */
-
-[hidden]:where(:not([hidden="until-found"])) {
-display: none;
-}
-
-.pointer-events-none{
-pointer-events: none;
-}
-
-.pointer-events-auto{
-pointer-events: auto;
-}
-
-.visible{
-visibility: visible;
-}
-
-.fixed{
-position: fixed;
-}
-
-.absolute{
-position: absolute;
-}
-
-.relative{
-position: relative;
-}
-
-.sticky{
-position: sticky;
-}
-
-.inset-0{
-inset: 0px;
-}
-
-.bottom-4{
-bottom: 1rem;
-}
-
-.right-4{
-right: 1rem;
-}
-
-.z-20{
-z-index: 20;
-}
-
-.z-\[100\]{
-z-index: 100;
-}
-
-.mx-auto{
-margin-left: auto;
-margin-right: auto;
-}
-
-.mb-1{
-margin-bottom: 0.25rem;
-}
-
-.mt-1{
-margin-top: 0.25rem;
-}
-
-.mt-1\.5{
-margin-top: 0.375rem;
-}
-
-.mt-2{
-margin-top: 0.5rem;
-}
-
-.mt-3{
-margin-top: 0.75rem;
-}
-
-.mt-4{
-margin-top: 1rem;
-}
-
-.mt-5{
-margin-top: 1.25rem;
-}
-
-.mt-6{
-margin-top: 1.5rem;
-}
-
-.inline-block{
-display: inline-block;
-}
-
-.flex{
-display: flex;
-}
-
-.inline-flex{
-display: inline-flex;
-}
-
-.grid{
-display: grid;
-}
-
-.hidden{
-display: none;
-}
-
-.h-1\.5{
-height: 0.375rem;
-}
-
-.h-11{
-height: 2.75rem;
-}
-
-.h-2{
-height: 0.5rem;
-}
-
-.h-2\.5{
-height: 0.625rem;
-}
-
-.h-3{
-height: 0.75rem;
-}
-
-.h-3\.5{
-height: 0.875rem;
-}
-
-.h-4{
-height: 1rem;
-}
-
-.h-7{
-height: 1.75rem;
-}
-
-.h-8{
-height: 2rem;
-}
-
-.h-\[3px\]{
-height: 3px;
-}
-
-.h-full{
-height: 100%;
-}
-
-.min-h-screen{
-min-height: 100vh;
-}
-
-.w-1\.5{
-width: 0.375rem;
-}
-
-.w-11{
-width: 2.75rem;
-}
-
-.w-2{
-width: 0.5rem;
-}
-
-.w-2\.5{
-width: 0.625rem;
-}
-
-.w-3{
-width: 0.75rem;
-}
-
-.w-3\.5{
-width: 0.875rem;
-}
-
-.w-4{
-width: 1rem;
-}
-
-.w-6{
-width: 1.5rem;
-}
-
-.w-7{
-width: 1.75rem;
-}
-
-.w-8{
-width: 2rem;
-}
-
-.w-full{
-width: 100%;
-}
-
-.min-w-0{
-min-width: 0px;
-}
-
-.max-w-\[1080px\]{
-max-width: 1080px;
-}
-
-.max-w-\[60ch\]{
-max-width: 60ch;
-}
-
-.max-w-\[min\(92vw\2c 360px\)\]{
-max-width: min(92vw,360px);
-}
-
-.flex-1{
-flex: 1 1 0%;
-}
-
-.transform{
-transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
-}
-
-.animate-\[slideIn_0\.25s_ease\]{
-animation: slideIn 0.25s ease;
-}
-
-@keyframes ping{
-75%, 100%{
-transform: scale(2);
-opacity: 0;
-}
-}
-
-.animate-ping{
-animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
-}
-
-@keyframes pulse{
-50%{
-opacity: .5;
-}
-}
-
-.animate-pulse{
-animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-.grid-cols-1{
-grid-template-columns: repeat(1, minmax(0, 1fr));
-}
-
-.grid-cols-2{
-grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.grid-cols-3{
-grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.flex-col{
-flex-direction: column;
-}
-
-.flex-wrap{
-flex-wrap: wrap;
-}
-
-.items-start{
-align-items: flex-start;
-}
-
-.items-center{
-align-items: center;
-}
-
-.justify-center{
-justify-content: center;
-}
-
-.justify-between{
-justify-content: space-between;
-}
-
-.gap-1{
-gap: 0.25rem;
-}
-
-.gap-1\.5{
-gap: 0.375rem;
-}
-
-.gap-2{
-gap: 0.5rem;
-}
-
-.gap-3{
-gap: 0.75rem;
-}
-
-.gap-4{
-gap: 1rem;
-}
-
-.gap-5{
-gap: 1.25rem;
-}
-
-.gap-6{
-gap: 1.5rem;
-}
-
-.space-y-3 > :not([hidden]) ~ :not([hidden]){
---tw-space-y-reverse: 0;
-margin-top: calc(0.75rem * calc(1 - var(--tw-space-y-reverse)));
-margin-bottom: calc(0.75rem * var(--tw-space-y-reverse));
-}
-
-.divide-x-2 > :not([hidden]) ~ :not([hidden]){
---tw-divide-x-reverse: 0;
-border-right-width: calc(2px * var(--tw-divide-x-reverse));
-border-left-width: calc(2px * calc(1 - var(--tw-divide-x-reverse)));
-}
-
-.divide-y > :not([hidden]) ~ :not([hidden]){
---tw-divide-y-reverse: 0;
-border-top-width: calc(1px * calc(1 - var(--tw-divide-y-reverse)));
-border-bottom-width: calc(1px * var(--tw-divide-y-reverse));
-}
-
-.divide-y-2 > :not([hidden]) ~ :not([hidden]){
---tw-divide-y-reverse: 0;
-border-top-width: calc(2px * calc(1 - var(--tw-divide-y-reverse)));
-border-bottom-width: calc(2px * var(--tw-divide-y-reverse));
-}
-
-.divide-\[var\(--border\)\] > :not([hidden]) ~ :not([hidden]){
-border-color: var(--border);
-}
-
-.divide-\[var\(--border-light\)\] > :not([hidden]) ~ :not([hidden]){
-border-color: var(--border-light);
-}
-
-.self-start{
-align-self: flex-start;
-}
-
-.overflow-hidden{
-overflow: hidden;
-}
-
-.overflow-x-clip{
-overflow-x: clip;
-}
-
-.rounded-full{
-border-radius: 9999px;
-}
-
-.border{
-border-width: 1px;
-}
-
-.border-2{
-border-width: 2px;
-}
-
-.border-\[3px\]{
-border-width: 3px;
-}
-
-.border-b-2{
-border-bottom-width: 2px;
-}
-
-.border-b-\[3px\]{
-border-bottom-width: 3px;
-}
-
-.border-t{
-border-top-width: 1px;
-}
-
-…
-
-[Message tronqué]  Afficher l'intégralité du message
+</body></html>
