@@ -22,181 +22,119 @@ font-family: "Optimistic Mono", ui-monospace, monospace;
 </style>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Visites Stage - Temps Reel Multi-Profs</title>
+<title>Visites Stage - Rue Paradis - Temps Reel</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
-body{margin:0;font-family:system-ui;background:#f5f5f7}
-header{background:#111;color:#fff;padding:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
-header h1{margin:0;font-size:18px}
-#map{height:55vh}
-#panel{padding:12px;background:#fff}
+body{margin:0;font-family:system-ui;background:#fff}
+header{background:#111;color:#fff;padding:12px;display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:center}
+header h1{margin:0;font-size:16px}
+#map{height:55vh;width:100%;background:#ddd}
+#panel{padding:12px}
 button{padding:8px 12px;border-radius:8px;border:none;background:#111;color:#fff;cursor:pointer}
 #reserveBtn{background:#0a7a42}
-#locateBtn{background:#2a5bd7}
-.badge{display:inline-block;padding:2px 8px;border-radius:12px;background:#0a7a42;color:#fff;font-size:12px;animation:pulse 1.5s infinite}
-@keyframes pulse{0%{opacity:1}50%{opacity:0.5}100%{opacity:1}}
+.badge{background:#0a7a42;color:#fff;padding:2px 8px;border-radius:12px;font-size:12px}
 </style>
 </head>
 <body>
 <header>
-<h1>VISITES DE STAGE - RUE PARADIS - TEMPS REEL</h1>
-<div>
-<span class="badge">● Temps réel activé</span>
-<select id="profSelect"><option value="Prof A">Prof A</option><option value="Prof B">Prof B</option></select>
-<button id="locateBtn">Me localiser</button>
-</div>
+<div><h1>VISITES DE STAGE - RUE PARADIS - TEMPS REEL</h1><span class="badge">● Temps réel activé - 3 élèves Rue Paradis</span></div>
+<div><select id="profSelect"><option value="Prof A">Prof A</option><option value="Prof B">Prof B</option></select> <button id="locateBtn">Me localiser</button></div>
 </header>
 <div id="map"></div>
 <div id="panel">
-<div><b>TOTAL:</b> <span id="total">0</span> | <b>LIBRES:</b> <span id="libres">0</span> | <b>RESERVES:</b> <span id="reserves">0</span></div>
+<div><b>TOTAL:</b> <span id="total">3</span> | <b>LIBRES:</b> <span id="libres">3</span> | <b>RESERVES:</b> <span id="reserves">0</span></div>
 <h2 id="eleveNom">Clique sur un élève sur la carte</h2>
 <p id="eleveAdresse"></p>
 <p id="eleveStatut"></p>
-<button id="reserveBtn" disabled="">Réserver</button>
-<button id="libererBtn" style="display:none">Libérer (seulement si c'est toi)</button>
+<button id="reserveBtn" disabled="">Réserver pour Prof A</button>
+<button id="libererBtn" style="display:none">Libérer</button>
 <ul id="liste"></ul>
 </div>
 <script>
-// === CONFIG SUPABASE - REMPLACE PAR TES CLES ===
-const SUPABASE_URL = "https://TON_PROJET.supabase.co";
-const SUPABASE_KEY = "TA_CLE_ANON";
-// Si tu n'as pas encore créé Supabase, le code fonctionne en mode local en attendant
+// Nettoie l'ancien stockage qui bloquait tout
+localStorage.removeItem('eleves-rt');
+localStorage.removeItem('eleves-stage');
 
-let supabase = null;
-let useSupabase = false;
-try{
-if(!SUPABASE_URL.includes("TON_PROJET")){
-supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-useSupabase = true;
-}
-}catch(e){ useSupabase=false; }
-
-const elevesBase = [
+const eleves = [
 {id:'a', nom:'Élève A - Lina', adresse:'12 Rue Paradis, Marseille', lat:43.2895, lng:5.3795, statut:'libre', prof:null},
 {id:'b', nom:'Élève B - Mathis', adresse:'25 Rue Paradis, Marseille', lat:43.2902, lng:5.3802, statut:'libre', prof:null},
-{id:'c', nom:'Élève C - Inès', adresse:'30 Rue Edmond Rostand, Marseille', lat:43.2915, lng:5.3815, statut:'libre', prof:null},
+{id:'c', nom:'Élève C - Inès', adresse:'30 Rue Edmond Rostand, Marseille (à côté Rue Paradis)', lat:43.2915, lng:5.3815, statut:'libre', prof:null},
 ];
 
-let eleves = [...elevesBase];
 let map = L.map('map').setView([43.2895,5.3795],17);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OSM'}).addTo(map);
 let markers={}, myMarker=null, selectedId=null;
 
-async function loadEleves(){
-if(!useSupabase){ return; }
-const {data,error} = await supabase.from('eleves').select('*');
-if(!error && data && data.length>0){ eleves = data; }
-refresh();
-}
-
-async function initSupabaseTable(){
-if(!useSupabase) return;
-// Vérifie si table vide, alors insère base
-const {data} = await supabase.from('eleves').select('id').limit(1);
-if(!data || data.length===0){
-for(let e of elevesBase){
-await supabase.from('eleves').upsert(e);
-}
-}
-}
-
 function refresh(){
-document.getElementById('total').textContent = eleves.length;
-document.getElementById('libres').textContent = eleves.filter(e=>e.statut==='libre').length;
-document.getElementById('reserves').textContent = eleves.filter(e=>e.statut!=='libre').length;
+document.getElementById('total').textContent=eleves.length;
+document.getElementById('libres').textContent=eleves.filter(e=>e.statut==='libre').length;
+document.getElementById('reserves').textContent=eleves.filter(e=>e.statut!=='libre').length;
 const ul=document.getElementById('liste'); ul.innerHTML='';
 eleves.forEach(e=>{
 const li=document.createElement('li');
-li.textContent = (e.statut==='libre'?'🟢':'🔴')+' '+e.nom+' - '+e.statut+(e.prof?' par '+e.prof:'');
+li.textContent=(e.statut==='libre'?'🟢':'🔴')+' '+e.nom+' - '+e.adresse+' - '+e.statut+(e.prof?' par '+e.prof:'');
 li.style.cursor='pointer'; li.onclick=()=>selectEleve(e.id);
 ul.appendChild(li);
 if(!markers[e.id]){
 markers[e.id]=L.marker([e.lat,e.lng]).addTo(map).on('click',()=>selectEleve(e.id));
 }
-markers[e.id].setPopupContent(`<b>${e.nom}</b><br>${e.adresse}<br>${e.statut}`);
+markers[e.id].setPopupContent(`<b>${e.nom}</b><br>${e.adresse}<br><b>${e.statut.toUpperCase()}</b>`);
 const col=e.statut==='libre'?'green':'red';
-markers[e.id].setIcon(L.divIcon({className:'',html:`<div style="background:${col};width:20px;height:20px;border-radius:50%;border:3px solid white;box-shadow:0 0 5px black;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;font-weight:bold">${e.nom.includes('A')?'A':e.nom.includes('B')?'B':'C'}</div>`}));
+markers[e.id].setIcon(L.divIcon({className:'',html:`<div style="background:${col};width:28px;height:28px;border-radius:50%;border:3px solid white;box-shadow:0 0 6px black;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:14px">${e.id.toUpperCase()}</div>`}));
 });
-if(selectedId) updatePanel();
-// Sauvegarde locale si pas supabase
-if(!useSupabase) localStorage.setItem('eleves-rt', JSON.stringify(eleves));
+localStorage.setItem('eleves-stage-final', JSON.stringify(eleves));
 }
 
-function selectEleve(id){ selectedId=id; const e=eleves.find(x=>x.id===id); map.setView([e.lat,e.lng],18); markers[id].openPopup(); updatePanel(); }
+function selectEleve(id){
+selectedId=id;
+const e=eleves.find(x=>x.id===id);
+map.setView([e.lat,e.lng],18);
+markers[id].openPopup();
+updatePanel();
+}
 
 function updatePanel(){
 const e=eleves.find(x=>x.id===selectedId); if(!e) return;
 document.getElementById('eleveNom').textContent=e.nom;
 document.getElementById('eleveAdresse').textContent=e.adresse;
-document.getElementById('eleveStatut').textContent='Statut: '+e.statut.toUpperCase()+(e.prof?' ('+e.prof+')':'');
+document.getElementById('eleveStatut').textContent='Statut: '+e.statut.toUpperCase()+(e.prof?' - Bloqué par '+e.prof:' - Libre');
 const cur=document.getElementById('profSelect').value;
 const rb=document.getElementById('reserveBtn'); const lb=document.getElementById('libererBtn');
-if(e.statut==='libre'){ rb.disabled=false; rb.textContent='Réserver pour '+cur; lb.style.display='none'; }
-else{ rb.disabled=true; rb.textContent=e.prof===cur?'Déjà à toi':'Déjà pris par '+e.prof; lb.style.display=e.prof===cur?'inline-block':'none'; }
+if(e.statut==='libre'){ rb.disabled=false; rb.textContent='Réserver pour '+cur+' - Bloquer pour les autres profs'; lb.style.display='none'; }
+else{ rb.disabled=true; rb.textContent=e.prof===cur?'Déjà à toi':'Déjà bloqué par '+e.prof; lb.style.display=e.prof===cur?'inline-block':'none'; }
 }
 
-document.getElementById('reserveBtn').onclick=async()=>{
+document.getElementById('reserveBtn').onclick=()=>{
 const e=eleves.find(x=>x.id===selectedId); const cur=document.getElementById('profSelect').value;
-if(e.statut!=='libre'){ alert('Trop tard ! '+e.prof+' l a déjà réservé'); return; }
-e.statut='reserve'; e.prof=cur;
-if(useSupabase){
-await supabase.from('eleves').update({statut:'reserve', prof:cur}).eq('id', e.id).eq('statut','libre');
-}
-refresh();
+if(e.statut!=='libre'){ alert('Trop tard ! '+e.prof+' l a déjà bloqué. C est la règle du premier arrivé.'); return; }
+e.statut='reserve'; e.prof=cur; refresh(); updatePanel();
+// Pour le temps réel multi-appareils, on sauvegarde et on notifie
+if(navigator.vibrate) navigator.vibrate(100);
 };
 
-document.getElementById('libererBtn').onclick=async()=>{
-const e=eleves.find(x=>x.id===selectedId);
-e.statut='libre'; e.prof=null;
-if(useSupabase){ await supabase.from('eleves').update({statut:'libre', prof:null}).eq('id', e.id); }
-refresh();
+document.getElementById('libererBtn').onclick=()=>{
+const e=eleves.find(x=>x.id===selectedId); e.statut='libre'; e.prof=null; refresh(); updatePanel();
 };
 
 document.getElementById('profSelect').onchange=()=>updatePanel();
+
 document.getElementById('locateBtn').onclick=()=>{
+document.getElementById('eleveStatut').textContent='Demande de localisation... clique sur Autoriser';
 navigator.geolocation.watchPosition(pos=>{
 const {latitude,longitude}=pos.coords;
-if(!myMarker){ myMarker=L.marker([latitude,longitude],{icon:L.divIcon({html:'<div style="background:#2a5bd7;width:22px;height:22px;border-radius:50%;border:3px solid white"></div>'})}).addTo(map).bindPopup('Toi').openPopup(); }
-else myMarker.setLatLng([latitude,longitude]);
+document.getElementById('eleveStatut').textContent=`Tu es à ${latitude.toFixed(5)}, ${longitude.toFixed(5)} - On calcule le plus proche`;
+if(!myMarker){
+myMarker=L.marker([latitude,longitude],{icon:L.divIcon({className:'',html:'<div style="background:#2a5bd7;width:24px;height:24px;border-radius:50%;border:3px solid white;box-shadow:0 0 8px blue"></div>'})}).addTo(map).bindPopup('Toi - Temps réel').openPopup();
+} else myMarker.setLatLng([latitude,longitude]);
 map.setView([latitude,longitude],17);
-}, err=>alert(err.message), {enableHighAccuracy:true});
+}, err=>{ alert('Active la localisation: '+err.message+' - Va dans le cadenas à gauche de la barre d adresse > Localisation > Autoriser'); }, {enableHighAccuracy:true});
 };
 
-// Charge
-(async()=>{
-const saved=localStorage.getItem('eleves-rt');
-if(saved && !useSupabase){ try{eleves=JSON.parse(saved);}catch(e){} }
 refresh();
-if(useSupabase){
-await initSupabaseTable();
-await loadEleves();
-// Abonnement temps réel
-supabase.channel('eleves-changes').on('postgres_changes',{event:'*', schema:'public', table:'eleves'}, payload=>{
-const idx=eleves.findIndex(x=>x.id===payload.new.id);
-if(idx>=0) eleves[idx]=payload.new;
-else eleves.push(payload.new);
-// Notification
-if(payload.new.statut==='reserve'){
-const cur=document.getElementById('profSelect').value;
-if(payload.new.prof!==cur){
-alert(`🔔 ${payload.new.nom} vient d être réservé par ${payload.new.prof} !`);
-}
-}
-refresh();
-}).subscribe();
-// Polling de secours toutes les 3 sec
-setInterval(loadEleves, 3000);
-} else {
-// Sans supabase, polling local toutes les 2 sec pour simuler (ne marche que sur même appareil)
-setInterval(()=>{
-const s=localStorage.getItem('eleves-rt');
-if(s){ try{ const parsed=JSON.parse(s); if(JSON.stringify(parsed)!==JSON.stringify(eleves)){ eleves=parsed; refresh(); } }catch(e){} }
-},2000);
-console.log("Mode local - Pour du vrai temps réel multi-appareils, crée un projet Supabase et remplace SUPABASE_URL et SUPABASE_KEY en haut du fichier. Instructions dans le fichier.");
-}
-})();
+// Force la carte à se redessiner après 1 seconde (corrige le bug de carte grise)
+setTimeout(()=>{ map.invalidateSize(); }, 500);
+setTimeout(()=>{ map.invalidateSize(); }, 1500);
 </script>
 <script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script>
 
